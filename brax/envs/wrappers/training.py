@@ -46,11 +46,11 @@ def wrap(
     environment did not already have batch dimensions, it is additional Vmap
     wrapped.
   """
-  env = EpisodeWrapper(env, episode_length, action_repeat)
   if randomization_fn is None:
     env = VmapWrapper(env)
   else:
     env = DomainRandomizationVmapWrapper(env, randomization_fn)
+  env = EpisodeWrapper(env, episode_length, action_repeat)
   env = AutoResetWrapper(env)
   return env
 

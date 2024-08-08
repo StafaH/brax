@@ -131,8 +131,12 @@ def compute_ppo_loss(
 
   # Put the time dimension first.
   data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
+
+  print("incoming data shape ", data.observation.shape)
+  print("normalizer_params", normalizer_params.mean.shape)
   policy_logits = policy_apply(normalizer_params, params.policy,
                                data.observation)
+  print("policy logits shape after", policy_logits.shape)
 
   baseline = value_apply(normalizer_params, params.value, data.observation)
 
@@ -143,6 +147,10 @@ def compute_ppo_loss(
   truncation = data.extras['state_extras']['truncation']
   termination = (1 - data.discount) * (1 - truncation)
 
+  print("parametric_action_distribution", parametric_action_distribution)
+  print("action size", parametric_action_distribution.param_size)
+  print("policy_logits shape", policy_logits.shape)
+  print("raw action shape", data.extras['policy_extras']['raw_action'].shape)
   target_action_log_probs = parametric_action_distribution.log_prob(
       policy_logits, data.extras['policy_extras']['raw_action'])
   behaviour_action_log_probs = data.extras['policy_extras']['log_prob']

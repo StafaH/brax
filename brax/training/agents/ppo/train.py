@@ -277,7 +277,10 @@ def train(
       x = jnp.reshape(x, (num_minibatches, -1) + x.shape[1:])
       return x
 
+    print("mini_batches ", num_minibatches)
+    print("Preshuffled data shape", data.observation.shape)
     shuffled_data = jax.tree_util.tree_map(convert_data, data)
+    print("Shuffled data shape", shuffled_data.observation.shape)
     (optimizer_state, params, _), metrics = jax.lax.scan(
         functools.partial(minibatch_step, normalizer_params=normalizer_params),
         (optimizer_state, params, key_grad),
@@ -316,6 +319,9 @@ def train(
     assert data.discount.shape[1:] == (unroll_length,)
 
     # Update normalization params and normalize observations.
+    print("Data", data.observation.shape)
+    print("Normalizer", training_state.normalizer_params.mean.shape)
+    print("pmap axis name", _PMAP_AXIS_NAME)
     normalizer_params = running_statistics.update(
         training_state.normalizer_params,
         data.observation,
@@ -336,6 +342,7 @@ def train(
 
   def training_epoch(training_state: TrainingState, state: envs.State,
                      key: PRNGKey) -> Tuple[TrainingState, envs.State, Metrics]:
+    print("training epoch length ", num_training_steps_per_epoch)
     (training_state, state, _), loss_metrics = jax.lax.scan(
         training_step, (training_state, state, key), (),
         length=num_training_steps_per_epoch)
@@ -375,12 +382,22 @@ def train(
       value=ppo_network.value_network.init(key_value),
   )
 
+  print("Shape", env_state.obs.shape[1:])
+  if len(env_state.obs.shape) < 4:
+    normalizer_shape = env_state.obs.shape[-1:]
+  else:
+    normalizer_shape = env_state.obs.shape[-3:]
+  
+  # normalizer_shape = env_state.obs.shape[-1:]
+
   training_state = TrainingState(  # pytype: disable=wrong-arg-types  # jax-ndarray
       optimizer_state=optimizer.init(init_params),  # pytype: disable=wrong-arg-types  # numpy-scalars
       params=init_params,
       normalizer_params=running_statistics.init_state(
-          specs.Array(env_state.obs.shape[-1:], jnp.dtype('float32'))),
+          specs.Array(normalizer_shape, jnp.dtype('float32'))),
       env_steps=0)
+  
+  print("normalizer param shape", training_state.normalizer_params.mean.shape)
 
   if num_timesteps == 0:
     return (

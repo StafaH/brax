@@ -16,7 +16,7 @@
 """A brax environment for training and inference."""
 
 import abc
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union, Tuple
 
 from brax import base
 from brax.generalized import pipeline as g_pipeline
@@ -54,7 +54,7 @@ class Env(abc.ABC):
 
   @property
   @abc.abstractmethod
-  def observation_size(self) -> int:
+  def observation_size(self) -> Tuple[int, ...]:
     """The size of the observation vector returned in step and reset."""
 
   @property
@@ -135,10 +135,10 @@ class PipelineEnv(Env):
     return self.sys.opt.timestep * self._n_frames  # pytype: disable=attribute-error
 
   @property
-  def observation_size(self) -> int:
+  def observation_size(self) -> Tuple[int, ...]:
     rng = jax.random.PRNGKey(0)
     reset_state = self.unwrapped.reset(rng)
-    return reset_state.obs.shape[-1]
+    return reset_state.obs.shape[1:]
 
   @property
   def action_size(self) -> int:
@@ -172,7 +172,7 @@ class Wrapper(Env):
     return self.env.step(state, action)
 
   @property
-  def observation_size(self) -> int:
+  def observation_size(self) -> Tuple[int, ...]:
     return self.env.observation_size
 
   @property
