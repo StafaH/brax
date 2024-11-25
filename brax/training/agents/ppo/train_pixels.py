@@ -154,6 +154,7 @@ def train(
       saving policy checkpoints
     randomization_fn: a user-defined callback function that generates randomized
       environments
+    augment_image: whether to augment images with random shifts
     restore_checkpoint_path: the path used to restore previous model params
 
   Returns:

@@ -232,13 +232,13 @@ def train(
                          (local_devices_to_use, -1) + key_envs.shape[1:])
   env_state = reset_fn(key_envs)
   ndarray_obs = isinstance(env_state.obs, jnp.ndarray) # Check whether observations are in dictionary form.
-  obs_shape = env_state.obs.shape if ndarray_obs else env_state.obs['state'].shape
+  obs_shape = env_state.obs.shape[-1] if ndarray_obs else env.observation_size
 
   normalize = lambda x, y: x
   if normalize_observations:
     normalize = running_statistics.normalize
   ppo_network = network_factory(
-      obs_shape[-1],
+      obs_shape,
       env.action_size,
       preprocess_observations_fn=normalize)
   make_policy = ppo_networks.make_inference_fn(ppo_network)
@@ -253,7 +253,8 @@ def train(
       reward_scaling=reward_scaling,
       gae_lambda=gae_lambda,
       clipping_epsilon=clipping_epsilon,
-      normalize_advantage=normalize_advantage)
+      normalize_advantage=normalize_advantage,
+      dict_obs=not ndarray_obs)
 
   gradient_update_fn = gradients.gradient_update_fn(
       loss_fn, optimizer, pmap_axis_name=_PMAP_AXIS_NAME, has_aux=True)
