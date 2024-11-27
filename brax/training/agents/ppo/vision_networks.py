@@ -1,6 +1,6 @@
 """PPO vision networks."""
 
-from typing import Sequence, Tuple, Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence, Tuple
 
 import jax
 import jax.numpy as jp

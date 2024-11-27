@@ -19,7 +19,7 @@ See: https://arxiv.org/pdf/1707.06347.pdf
 
 import functools
 import time
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Mapping, Optional, Tuple, Union
 
 from absl import logging
 from brax import base
@@ -37,6 +37,7 @@ from brax.training.types import PRNGKey
 from brax.v1 import envs as envs_v1
 from etils import epath
 import flax
+from flax.core import FrozenDict
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -107,6 +108,8 @@ def train(
         Callable[[base.System, jnp.ndarray], Tuple[base.System, base.System]]
     ] = None,
     restore_checkpoint_path: Optional[str] = None,
+    madrona_backend: bool = False,
+    augment_pixels: bool = False
 ):
   """PPO training.
 
@@ -162,6 +165,10 @@ def train(
   Returns:
     Tuple of (make_policy function, network params, metrics)
   """
+  if madrona_backend:
+    assert not eval_env, "Madrona-MJX doesn't support multiple env instances"
+    assert num_eval_envs == num_envs, "Madrona-MJX requires a fixed batch size"
+
   assert batch_size * num_minibatches % num_envs == 0
   xt = time.time()
 
@@ -216,14 +223,16 @@ def train(
           randomization_fn, rng=randomization_rng
       )
     if isinstance(environment, envs.Env):
-      wrap_for_training = envs.training.wrap
+      wrap_for_training = functools.partial(
+        envs.training.wrap, scan = not madrona_backend
+      )
     else:
       wrap_for_training = envs_v1.wrappers.wrap_for_training
     env = wrap_for_training(
         environment,
         episode_length=episode_length,
         action_repeat=action_repeat,
-        randomization_fn=v_randomization_fn,
+        randomization_fn=v_randomization_fn
     )
 
   reset_fn = jax.jit(jax.vmap(env.reset))
@@ -260,6 +269,33 @@ def train(
   gradient_update_fn = gradients.gradient_update_fn(
       loss_fn, optimizer, pmap_axis_name=_PMAP_AXIS_NAME, has_aux=True)
 
+  def random_translate_pixels(obs: Mapping[str, jax.Array], key):
+    assert isinstance(obs, FrozenDict)
+    @jax.vmap
+    def rt_all_views(ub_obs: Mapping[str, jax.Array], key) -> Mapping[str, jax.Array]:
+        # Expects dictionary of unbatched observations.
+      def rt_view(key, img: jax.Array, padding) -> jax.Array: # TxHxWxC
+        # Randomly translates a set of pixel inputs.
+        crop_from = jax.random.randint(key, (2, ), 0, 2 * padding + 1)
+        zero = jnp.zeros((1, ), dtype=jnp.int32)
+        crop_from =  jnp.concatenate([zero, crop_from, zero])
+        padded_img = jnp.pad(img, ((0, 0), (padding, padding), (padding, padding), (0, 0)),
+                            mode='edge')
+        return jax.lax.dynamic_slice(padded_img, crop_from, img.shape)
+
+      out = {}
+      for k_view, v_view in ub_obs.items():
+        if k_view.startswith('pixels/'):
+          key, key_shift = jax.random.split(key)
+          out[k_view] = rt_view(key_shift, v_view, 4)
+      ub_obs = ub_obs.copy(out) # Update the shifted fields
+      return ub_obs
+
+    bdim = next(iter(obs.items()), None)[1].shape[0]
+    keys = jax.random.split(key, bdim)
+    obs = rt_all_views(obs, keys)
+    return obs
+    
   def minibatch_step(
       carry, data: types.Transition,
       normalizer_params: running_statistics.RunningStatisticsState):
@@ -283,6 +319,18 @@ def train(
       x = jax.random.permutation(key_perm, x)
       x = jnp.reshape(x, (num_minibatches, -1) + x.shape[1:])
       return x
+
+    if augment_pixels:
+      key, key_rt = jax.random.split(key)
+      r_translate = functools.partial(random_translate_pixels, key=key_rt)
+      data = types.Transition(
+        observation=r_translate(data.observation),
+        action=data.action,
+        reward=data.reward,
+        discount=data.discount,
+        next_observation=r_translate(data.next_observation),
+        extras=data.extras
+      )
 
     shuffled_data = jax.tree_util.tree_map(convert_data, data)
     (optimizer_state, params, _), metrics = jax.lax.scan(
@@ -326,10 +374,14 @@ def train(
     assert data.discount.shape[1:] == (unroll_length,)
 
     # Update normalization params and normalize observations.
-    normalizer_params = running_statistics.update(
-        training_state.normalizer_params,
-        data.observation if ndarray_obs else data.observation['state'],
-        pmap_axis_name=_PMAP_AXIS_NAME)
+    if normalize_observations:
+      normalizer_params = running_statistics.update(
+          training_state.normalizer_params,
+          data.observation if ndarray_obs else data.observation['state'],
+          pmap_axis_name=_PMAP_AXIS_NAME)
+    else:
+      # Handle case when normalize_observations = False and 'state' not in obs.
+      normalizer_params = training_state.normalizer_params
 
     (optimizer_state, params, _), metrics = jax.lax.scan(
         functools.partial(
@@ -384,13 +436,16 @@ def train(
       policy=ppo_network.policy_network.init(key_policy),
       value=ppo_network.value_network.init(key_value),
   )
+  if 'state' in obs_shape: # Handles pixels-only observations.
+    state_shape = env_state.obs.shape if ndarray_obs else env_state.obs['state'].shape
+  else:
+    state_shape = (1,) # Dummy
 
-  obs_shape = env_state.obs.shape if ndarray_obs else env_state.obs['state'].shape
   training_state = TrainingState(  # pytype: disable=wrong-arg-types  # jax-ndarray
       optimizer_state=optimizer.init(init_params),  # pytype: disable=wrong-arg-types  # numpy-scalars
       params=init_params,
       normalizer_params=running_statistics.init_state(
-          specs.Array(obs_shape[-1:], jnp.dtype('float32'))),
+          specs.Array(state_shape[-1:], jnp.dtype('float32'))),
       env_steps=0)
 
   if (
